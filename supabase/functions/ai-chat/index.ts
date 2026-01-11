@@ -41,13 +41,51 @@ Keep your responses:
 
 Remember: You're here to make sustainability fun and accessible!`;
 
-    let content: string;
+    let content: string | undefined;
 
+    const callLovableGateway = async (): Promise<string> => {
+      if (!LOVABLE_API_KEY) {
+        throw new Error('Lovable AI Gateway is not configured.');
+      }
+
+      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'google/gemini-3-flash-preview',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages.map((msg: { role: string; content: string }) => ({
+              role: msg.role,
+              content: msg.content,
+            })),
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        if (response.status === 429) {
+          return JSON.stringify({ __error: 'Rate limit exceeded. Please try again later.' });
+        }
+        if (response.status === 402) {
+          return JSON.stringify({ __error: 'AI credits depleted. Please add credits to continue.' });
+        }
+        const errorText = await response.text();
+        console.error('AI gateway error:', response.status, errorText);
+        throw new Error(`AI gateway error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content;
+    };
+
+    // Prefer Lovable Gateway; if a user-provided Gemini key exists, try it first and fall back on quota/rate errors.
     if (GEMINI_API_KEY) {
-      // Use Google's Gemini API directly with user's own key
       const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-      
-      // Format messages for Gemini API
+
       const geminiMessages = messages.map((msg: { role: string; content: string }) => ({
         role: msg.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: msg.content }],
@@ -70,63 +108,51 @@ Remember: You're here to make sustainability fun and accessible!`;
         }),
       });
 
-      if (!response.ok) {
+      if (response.ok) {
+        const data = await response.json();
+        content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      } else {
         const errorText = await response.text();
         console.error('Gemini API error:', response.status, errorText);
-        
-        if (response.status === 429) {
+
+        // If the user-provided Gemini key is out of quota / rate-limited, fall back to Lovable Gateway when available.
+        if (LOVABLE_API_KEY && (response.status === 429 || response.status === 403)) {
+          const gatewayContent = await callLovableGateway();
+          try {
+            const maybeError = JSON.parse(gatewayContent);
+            if (maybeError?.__error) {
+              return new Response(JSON.stringify({ error: maybeError.__error }), {
+                status: response.status,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+              });
+            }
+          } catch {
+            // not json
+          }
+          content = gatewayContent;
+        } else if (response.status === 429) {
           return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
             status: 429,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
+        } else {
+          throw new Error(`Gemini API error: ${response.status}`);
         }
-        
-        throw new Error(`Gemini API error: ${response.status}`);
       }
-
-      const data = await response.json();
-      content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      
     } else if (LOVABLE_API_KEY) {
-      // Fall back to Lovable AI Gateway
-      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'google/gemini-3-flash-preview',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...messages.map((msg: { role: string; content: string }) => ({
-              role: msg.role,
-              content: msg.content,
-            })),
-          ],
-        }),
-      });
-
-      if (!response.ok) {
-        if (response.status === 429) {
-          return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }), {
-            status: 429,
+      const gatewayContent = await callLovableGateway();
+      try {
+        const maybeError = JSON.parse(gatewayContent);
+        if (maybeError?.__error) {
+          return new Response(JSON.stringify({ error: maybeError.__error }), {
+            status: maybeError.__error.includes('credits') ? 402 : 429,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
-        if (response.status === 402) {
-          return new Response(JSON.stringify({ error: 'AI credits depleted. Please add credits to continue.' }), {
-            status: 402,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        }
-        const errorText = await response.text();
-        console.error('AI gateway error:', response.status, errorText);
-        throw new Error(`AI gateway error: ${response.status}`);
+      } catch {
+        // not json
       }
-
-      const data = await response.json();
-      content = data.choices?.[0]?.message?.content;
+      content = gatewayContent;
     } else {
       throw new Error('No API key configured. Please set GEMINI_API_KEY or LOVABLE_API_KEY.');
     }
