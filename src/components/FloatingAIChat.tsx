@@ -111,10 +111,46 @@ const FloatingAIChat = () => {
 
       if (error) {
         console.error("Chat error:", error);
-        setMessages(prev => [...prev, {
-          role: "assistant",
-          content: "Sorry, I encountered an error. Please try again later."
-        }]);
+        // Check for rate limit error in the error message
+        const errorMessage = error.message || String(error);
+        if (errorMessage.includes("429") || errorMessage.toLowerCase().includes("rate limit")) {
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: "🕐 I'm getting a lot of questions right now! Please wait a moment and try again."
+          }]);
+        } else if (errorMessage.includes("402")) {
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: "💳 AI credits have been used up. Please contact the app administrator."
+          }]);
+        } else {
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: "Sorry, I encountered an error. Please try again later."
+          }]);
+        }
+        return;
+      }
+
+      // Check for error in data response (edge function returned error)
+      if (data?.error) {
+        console.error("Chat error from response:", data.error);
+        if (data.error.includes("Rate limit")) {
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: "🕐 I'm getting a lot of questions right now! Please wait a moment and try again."
+          }]);
+        } else if (data.error.includes("credits")) {
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: "💳 AI credits have been used up. Please contact the app administrator."
+          }]);
+        } else {
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: `Sorry, something went wrong: ${data.error}`
+          }]);
+        }
         return;
       }
 
@@ -128,7 +164,7 @@ const FloatingAIChat = () => {
       console.error("Chat error:", err);
       setMessages(prev => [...prev, {
         role: "assistant",
-        content: "Sorry, something went wrong. Please try again."
+        content: "Sorry, something went wrong. Please try again in a few seconds."
       }]);
     } finally {
       setIsLoading(false);
